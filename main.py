@@ -1,92 +1,51 @@
-# fix the representation of returned information from database
-
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from decouple import config # for .env
+from contextlib import asynccontextmanager
+from decouple import config
 import asyncpg
-from tabulate import tabulate
+from fastapi import FastAPI, Depends, Request, HTTPException
 
-app = FastAPI()
+DB_USER = config("DB_USER")
+DB_PASS = config("DB_PASSWORD")
+DB_NAME = config("DB_NAME")
+DB_PORT = config("DB_PORT", cast=int)
+DB_HOST = config("DB_HOST")
 
+DB_URL = f"postgres://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-@app.get("/")
-async def root():
-    return {"message": "This is the school db REST API!"} 
-
-
-@app.get("/students", response_class=HTMLResponse)
-async def list_students():
-    conn = await asyncpg.connect(
-        user=config("DB_USER"),
-        password=config("DB_PASSWORD"),
-        database=config("DB_NAME"),
-        host=config("DB_HOST")
+# set up a connection pool
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.pool = await asyncpg.create_pool(
+        dsn=DB_URL,
+        min_size = 5,
+        max_size = 20,
+        max_inactive_connection_lifetime=300.0,
+        command_timeout=30.0
     )
-    values = await conn.fetch(
+    yield
+    await app.state.pool.close()
+
+app = FastAPI(lifespan=lifespan)
+
+async def get_connection(request: Request):
+    pool = request.app.state.pool
+    async with pool.acquire(timeout=5.0) as conn:
+        yield conn
+
+@app.get("/students")
+async def list_students(conn: asyncpg.Connection = Depends(get_connection)):
+    rows = await conn.fetch(
         'SELECT * FROM students'
     )
+    return rows
 
-    await conn.close()
-    
-    text_table = tabulate(values, headers="keys")
-    return f"<pre>{text_table}</pre>"
-
-
-@app.get("/students/{id}", response_class=HTMLResponse)
-async def get_student(student_id: int):
-    conn = await asyncpg.connect(
-        user=config("DB_USER"),
-        password=config("DB_PASSWORD"),
-        database=config("DB_NAME"),
-        host=config("DB_HOST")
+@app.get("/students/{stud_id}")
+async def get_student(stud_id: int, conn: asyncpg.Connection = Depends(get_connection)):
+    row = await conn.fetchrow(
+        'SELECT * FROM students WHERE student_id = $1',
+        stud_id
     )
-    values = await conn.fetch(
-        f"SELECT * FROM students WHERE student_id = {student_id}"
-    )
-    
-    await conn.close()
-    text_table = tabulate(values, headers="keys")
-    
-    if text_table != '':
-        return f"<pre>{text_table}</pre"
-    
-    return "[ERROR] Student not found!"
 
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Student ID: {stud_id} does not exist.")
 
-@app.get("/courses", response_class=HTMLResponse)
-async def list_courses():
-    conn = await asyncpg.connect(
-        user=config("DB_USER"),
-        password=config("DB_PASSWORD"),
-        database=config("DB_NAME"),
-        host=config("DB_HOST")
-    )
-    values = await conn.fetch(
-        'SELECT * FROM courses'
-    )
-    
-    await conn.close()
-    
-    text_table = tabulate(values, headers="keys")
-    return f"<pre>{text_table}</pre>"
-
-
-@app.get("/courses/{course_id}", response_class=HTMLResponse)
-async def get_course(course_id: int):
-    conn = await asyncpg.connect(
-        user=config("DB_USER"),
-        password=config("DB_PASSWORD"),
-        database=config("DB_NAME"),
-        host=config("DB_HOST")
-    )
-    values = await conn.fetch(
-        f"SELECT * FROM courses WHERE course_id = {course_id}"
-    )
-    
-    await conn.close()
-    text_table = tabulate(values, headers="keys")
-
-    if text_table != "":
-        return f"<pre>{text_table}</pre>"
-    
-    return "[ERROR] Course not found!"
+    return [dict(row)]
