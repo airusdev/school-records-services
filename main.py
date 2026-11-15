@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 from decouple import config
 import asyncpg
-from fastapi import FastAPI, Depends, Request, HTTPException
-from pydantic import BaseModel, StrictInt
+from fastapi import FastAPI, status, Depends, Request, HTTPException
+from pydantic import BaseModel, StrictInt, field_validator
+import re
 
 DB_USER = config("DB_USER")
 DB_PASS = config("DB_PASSWORD")
@@ -13,8 +14,15 @@ DB_HOST = config("DB_HOST")
 DB_URL = f"postgres://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # request body validatiaon
-class StudentID(BaseModel):
+class Student(BaseModel):
     student_id: StrictInt
+    student_name: str
+
+    @field_validator("student_name")
+    def validate_name(cls, value):
+        if not re.match(r"^[a-zA-Z\s]+$", value):
+            raise ValueError("Name can only contain letters and spaces.")
+        return value.strip()
 
 # set up a connection pool
 @asynccontextmanager
@@ -46,7 +54,9 @@ async def list_students(conn: asyncpg.Connection = Depends(get_connection)):
 
     if not rows:
         raise HTTPException(status_code=404, details=f"Table: 'students' does not exist.")
-
+    elif rows == []:
+        raise HTTPException(status_code=204, details=f"Table exists however data does not exist yet.")
+    
     return rows
 
 @app.get("/students/{stud_id}")
@@ -60,3 +70,27 @@ async def get_student(stud_id: int, conn: asyncpg.Connection = Depends(get_conne
         raise HTTPException(status_code=404, detail=f"Student ID: {stud_id} does not exist.")
 
     return row
+
+@app.post("/students", status_code=status.HTTP_201_CREATED)
+async def input_student(student: Student, conn: asyncpg.Connection = Depends(get_connection)):
+    # check if unique id is not less than or equal to 0
+    if student.student_id <= 0:
+        raise HTTPException(status_code=400, detail=f"Student ID: {student.student_id} must be greater than 0.")
+
+    # check if data exists first.
+    exists = await conn.fetchval(
+        'SELECT COUNT(*) FROM students WHERE student_id = $1',
+        student.student_id
+    )
+    # if id is unique
+    if exists == 0: 
+        await conn.fetch(
+            'INSERT INTO students VALUES ($1, $2)',
+            student.student_id,
+            student.student_name
+        )
+
+        return {"message": "Student added!", "student": student}
+
+    raise HTTPException(status_code=409, detail=f"Student ID: {student.student_id} already exists")
+
