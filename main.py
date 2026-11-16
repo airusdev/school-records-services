@@ -14,14 +14,25 @@ DB_HOST = config("DB_HOST")
 DB_URL = f"postgres://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # request body validatiaon
-class Student(BaseModel):
-    student_id: StrictInt
+# class Student(BaseModel):
+#     student_id: StrictInt
+#     student_name: str
+
+#     @field_validator("student_name")
+#     def validate_name(cls, value):
+#         if not re.match(r"^[a-zA-Z\s]+$", value):
+#             raise ValueError("Name can only contain letters and spaces.")
+#         return value.strip()
+
+class AcquireStudentName(BaseModel):
     student_name: str
 
     @field_validator("student_name")
     def validate_name(cls, value):
         if not re.match(r"^[a-zA-Z\s]+$", value):
             raise ValueError("Name can only contain letters and spaces.")
+        if len(value) <= 1:
+            raise ValueError("Name must be longer than 2 letters.")
         return value.strip()
 
 # set up a connection pool
@@ -56,41 +67,50 @@ async def list_students(conn: asyncpg.Connection = Depends(get_connection)):
         raise HTTPException(status_code=404, details=f"Table: 'students' does not exist.")
     elif rows == []:
         raise HTTPException(status_code=204, details=f"Table exists however data does not exist yet.")
-    
+
     return rows
 
 @app.get("/students/{stud_id}")
 async def get_student(stud_id: int, conn: asyncpg.Connection = Depends(get_connection)):
+    if stud_id <= 0:
+        raise HTTPException(status_code=400, detail=f"Student ID: {stud_id} must be greater than or equal to 1")
+
     row = await conn.fetchrow(
         'SELECT * FROM students WHERE student_id = $1',
         stud_id
     )
 
     if not row:
-        raise HTTPException(status_code=404, detail=f"Student ID: {stud_id} does not exist.")
+        raise HTTPException(status_code=404, detail=f"Student ID: {stud_id} does not exist")
 
     return row
 
 @app.post("/students", status_code=status.HTTP_201_CREATED)
-async def input_student(student: Student, conn: asyncpg.Connection = Depends(get_connection)):
-    # check if unique id is not less than or equal to 0
-    if student.student_id <= 0:
-        raise HTTPException(status_code=400, detail=f"Student ID: {student.student_id} must be greater than 0.")
+async def input_student(stud: AcquireStudentName, conn: asyncpg.Connection = Depends(get_connection)):
+    await conn.fetchrow(
+        """INSERT INTO students (student_name)
+        VALUES ($1)""",
+        stud.student_name
+    )
 
-    # check if data exists first.
+    return {"message": "Student added!", "student": stud}
+
+@app.delete("/students/{stud_id}")
+async def delete_student(stud_id: int, conn: asyncpg.Connection = Depends(get_connection)):
+    if stud_id <= 0:
+        raise HTTPException(status_code=400, detail=f"Student ID must be greater than 0.")
+
     exists = await conn.fetchval(
         'SELECT COUNT(*) FROM students WHERE student_id = $1',
-        student.student_id
+        stud_id
     )
-    # if id is unique
-    if exists == 0: 
-        await conn.fetch(
-            'INSERT INTO students VALUES ($1, $2)',
-            student.student_id,
-            student.student_name
-        )
 
-        return {"message": "Student added!", "student": student}
+    if exists == 0:
+        raise HTTPException(status_code=404, detail=f"Student ID: {stud_id} have already been removed or does not exist")
+   
+    await conn.fetchrow(
+        'DELETE FROM students WHERE student_id = $1',
+        stud_id
+    )
 
-    raise HTTPException(status_code=409, detail=f"Student ID: {student.student_id} already exists")
-
+    return {"message": "Deleted student!", "Student ID": stud_id}
