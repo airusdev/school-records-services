@@ -114,3 +114,27 @@ async def delete_student(stud_id: int, conn: asyncpg.Connection = Depends(get_co
     )
 
     return {"message": "Deleted student!", "Student ID": stud_id}
+
+@app.patch("/students/{stud_id}")
+async def edit_student(stud_id: int, name: AcquireStudentName, conn: asyncpg.Connection = Depends(get_connection)):
+    if stud_id <= 0:
+        raise HTTPException(status_code=400, detail=f"Student ID: {stud_id} must be greater than 0")
+
+    exists = await conn.fetchval(
+        'SELECT COUNT(*) FROM students WHERE student_id = $1',
+        stud_id
+    )
+    if exists == 0:
+        raise HTTPException(status_code=404, detail=f"Student ID: {stud_id} does not exist")
+   
+    await conn.fetchrow(
+        """UPDATE students
+        SET student_name = $1
+        WHERE student_id = $2""",
+        name.student_name,
+        stud_id
+    )
+    
+    return {"message": "Student updated!", "student": {f"Student ID: {stud_id}": name.student_name}}
+
+    
